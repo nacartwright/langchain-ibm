@@ -66,6 +66,8 @@ from langchain_core.utils.function_calling import (
     convert_to_openai_function,
     convert_to_openai_tool,
 )
+import json
+from jsonschema import validate, ValidationError
 
 from langchain_core.messages import (
     AIMessage,
@@ -77,61 +79,21 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+import ast
 
 logger = logging.getLogger(__name__)
-
-RESPONSE_SCHEMA = {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "type": "object",
-    "description": "Schema for a message with conditional role based on the presence of tools",
-    "properties": {
-        "role": {
-            "type": "string",
-            "description": "The role of the message, which should be 'assistant' if there are no tools, or 'tool' if there are tools.",
-            "enum": ["assistant", "tool"],
-        },
-        "content": {
-            "type": "string",
-            "description": "The content of the message.",
-        },
-    },
-    "required": ["role", "content"],
-    "allOf": [
-        {
-            "if": {"properties": {"tools": {"type": "array", "minItems": 1}}},
-            "then": {"properties": {"role": {"const": "tool"}}},
-            "else": {"properties": {"role": {"const": "assistant"}}},
-        }
-    ],
-}
 
 TOOL_SCHEMA = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
     "properties": {
-        "name": {"type": "string", "description": "The name of the tool."},
-        "description": {
-            "type": "string",
-            "description": "A description of what the tool does.",
-        },
+        "name": {"type": "string", "description": "The name of the tool or action."},
         "args": {
             "type": "object",
-            "properties": {
-                "query": {
-                    "type": "object",
-                    "properties": {
-                        "description": {
-                            "type": "string",
-                            "description": "The description of the query argument.",
-                        }
-                    },
-                    "required": ["description"],
-                }
-            },
-            "required": ["query"],
+            "description": "The arguments or parameters for the tool or action."
         },
     },
-    "required": ["name", "description", "args"],
+    "required": ["name", "args"],
 }
 
 
@@ -142,12 +104,61 @@ def _is_json(input: str) -> bool:
     except json.JSONDecodeError:
         return False
 
+def extract_json_from_string(input_string):
+    # Regex pattern to match the JSON object
+    pattern = r'\{.*\}'
+
+    # Find the JSON object in the input string
+    match = re.search(pattern, input_string, re.DOTALL)
+    # Extracted JSON
+    if match:
+        json_content = match.group(0)
+        try:
+            # Parse the JSON content to ensure it's valid
+            json_data = json.loads(json_content)
+            return json_data
+        except json.JSONDecodeError:
+            print("Invalid JSON format")
+            return None
+    else:
+        return input_string
+
+def validate_json_with_schema(data):
+    """
+    Validates a JSON object against a given schema.
+
+    Args:
+        data: The JSON object to validate (can be a Python dictionary or a JSON string).
+        schema: The JSON schema to validate against (a Python dictionary).
+
+    Returns:
+        True if the data is valid according to the schema, False otherwise.
+    """
+
+    try:
+        # If data is a JSON string, parse it into a dictionary
+        if isinstance(data, str):
+            data = json.loads(data)
+
+        # Validate the data against the schema
+        validate(instance=data, schema=TOOL_SCHEMA)
+        return True
+
+    except (json.JSONDecodeError, ValidationError):
+        return False
+
 
 def remove_tags_and_parse(input_string):
     """Removes the specified tags from the input string and parses the result as JSON."""
-    tags_to_remove = "<|python_tag|><|start_header_id|>assistant<|end_header_id|>"
-    cleaned_string = input_string.replace(tags_to_remove, "").strip()
+    cleaned_string = ""
+    if "<|python_tag|>" in input_string:
+        tags_to_remove = "<|python_tag|><|start_header_id|>assistant<|end_header_id|>"
+        cleaned_string = input_string.replace(tags_to_remove, "").strip()
+    elif "<|start_header_id|>assistant<|end_header_id|>" in input_string:
+        tags_to_remove = "<|start_header_id|>assistant<|end_header_id|>"
+        cleaned_string = input_string.replace(tags_to_remove, "").strip()
 
+    print(cleaned_string)
     if isinstance(cleaned_string, str):
         if _is_json(cleaned_string):
             return _convert_to_json(cleaned_string)
@@ -161,10 +172,58 @@ def _convert_to_json(input: str) -> dict:
         raise ValueError("Input is not a valid JSON string")
 
 
+def extract_json_with_schema(text, schema):
+    """
+    Extracts a JSON object from a given string that conforms to the specified schema.
+
+    Args:
+        text: The string containing the JSON object.
+        schema: A dictionary representing the JSON schema to validate against.
+
+    Returns:
+        The extracted JSON object as a Python dictionary if it conforms to the schema, 
+        or None if not found or doesn't conform.
+    """
+
+    try:
+        # Attempt to parse the entire string as JSON
+        data = json.loads(text)
+
+        # Validate the parsed data against the schema
+        try:
+            validate(instance=data, schema=schema)
+            return data  # Return the data if it's valid
+        except ValidationError:
+            pass  # If validation fails, continue to the next approach
+
+    except json.JSONDecodeError:
+        # Handle the case where the entire string is not valid JSON
+        pass
+
+    # If simple parsing and validation failed, try a more robust approach
+    start_marker = "{"  # Start searching from the beginning of any potential JSON object
+    end_marker = "}"
+
+    start_index = 0
+    while start_index != -1:
+        start_index = text.find(start_marker, start_index)
+        if start_index != -1:
+            end_index = text.find(end_marker, start_index + len(start_marker))
+            if end_index != -1:
+                try:
+                    extracted_json = text[start_index: end_index + len(end_marker)]
+                    data = json.loads(extracted_json)
+                    validate(instance=data, schema=schema)
+                    return data  # Return the data if it's valid
+                except (json.JSONDecodeError, ValidationError):
+                    pass
+            start_index = end_index + 1  # Continue searching from the next potential object
+
+    return None  # Return None if no matching object is found
+
+
 def _is_valid_tool_call_format(tool: dict) -> bool:
     # If tool is a string, parse it as JSON
-   
-   
     if isinstance(tool, str):
         try:
             tool = json.loads(tool)
@@ -173,21 +232,17 @@ def _is_valid_tool_call_format(tool: dict) -> bool:
 
     # Check if tool is a list and extract the dictionary if it is
     if isinstance(tool, list):
-       
         if len(tool) == 1 and isinstance(tool[0], dict):
             tool = tool[0]
         else:
-           
             return False
 
     # Check if tool is a dictionary
     if not isinstance(tool, dict):
-       
         return False
 
     # Check if "args" is a dictionary
     if not isinstance(tool.get("args"), dict):
-       
         return False
 
     # Optionally, you can add more checks for specific keys in "args"
@@ -196,6 +251,28 @@ def _is_valid_tool_call_format(tool: dict) -> bool:
 
     return True
 
+def extract_sentence(text):
+    """
+    Extracts the sentence and punctuation from the given text.
+
+    Args:
+        text: The text containing the sentence to extract.
+
+    Returns:
+        The extracted sentence with punctuation, or None if not found.
+    """
+    print("Text Message", text)
+
+    if _is_json(text):
+        text = json.loads(text)[0]
+        return text
+
+    pattern = r'[A-Za-z0-9\s,.-]+'
+    match = re.search(pattern, text)
+    if match:
+        return match.group(0)
+    else:
+        return None
 
 def _tool_calling(
     raw_tool_calls: dict,
@@ -232,6 +309,53 @@ def _tool_calling(
 
     return AIMessage(content=content, tool_calls=tool_calls)
 
+def extract_tool_call(text):
+    """
+    Identifies and extracts a JSON structure with a specific format ({"name": ..., "args": ...}) from a string.
+
+    Args:
+        text: The string containing the JSON to be extracted.
+
+    Returns:
+        The extracted JSON object if found, otherwise None."""
+
+    try:
+        # Attempt to load the entire string as JSON
+        data = json.loads(text)
+
+        # Search for the target JSON structure within the loaded data
+        def find_target_json(data):
+            if isinstance(data, dict):
+                if "name" in data and "args" in data:
+                    return data
+                for value in data.values():
+                    result = find_target_json(value)
+                    if result:
+                        return result
+            elif isinstance(data, list):
+                for item in data:
+                    result = find_target_json(item)
+                    if result:
+                        return result
+            return None
+
+        extracted_json = find_target_json(data)
+        if extracted_json:
+            return extracted_json
+
+    except json.JSONDecodeError:
+        # If the entire string is not valid JSON, try to find the target structure using regex
+        import re
+
+        pattern = r'\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[^\}]*\}\s*\}'
+        match = re.search(pattern, text)
+        if match:
+            if isinstance(match.group(0), str):
+                return match.group(0)
+            elif isinstance(match.group(0), dict):
+                return json.loads(match.group(0))
+
+    return text
 
 
 ## Process a message after it has been generated by the model
@@ -245,92 +369,26 @@ def _post_processing(_dict: Mapping[str, Any], call_id: str) -> BaseMessage:
     Returns:
         The LangChain message.
     """
-    pattern = r'[A-Za-z0-9\s,.-]+'
-    raw_message = remove_tags_and_parse(_dict.get("generated_text", ""))
+    raw_message = extract_tool_call(_dict.get("generated_text", ""))
+    print("RAW MESSAGE", raw_message)
+    #raw_message = remove_tags_and_parse(_dict.get("generated_text", ""))
+    is_tool = validate_json_with_schema(raw_message)
+    print("FOUND TOOL", is_tool)
 
-    if _is_valid_tool_call_format(raw_message):
+    if is_tool:
+        print("TOOL CALL")
         return _tool_calling(raw_message, call_id)
-    elif isinstance(raw_message, dict):
-        return AIMessage(content=raw_message.get("content", ""), tool_calls=raw_message.get("tool_calls", []))
-    else:
-       
-        matches = re.findall(pattern, raw_message.replace("\n", ""))
-        return AIMessage(content=''.join(matches))
+    return AIMessage(content=raw_message)
 
-
-
-
-def _format_message_content(content: Any) -> Any:
-    """Format message content."""
-    if content and isinstance(content, list):
-        # Remove unexpected block types
-        formatted_content = []
-        for block in content:
-            if (
-                isinstance(block, dict)
-                and "type" in block
-                and block["type"] == "tool_use"
-            ):
-                continue
-            else:
-                formatted_content.append(block)
-    else:
-        formatted_content = content
-
-    return formatted_content
-
-
-# TODO: REMOVE
-def _lc_tool_call_to_openai_tool_call(tool_call: ToolCall) -> dict:
-    return {
-        "type": "function",
-        "id": tool_call["id"],
-        "function": {
-            "name": tool_call["name"],
-            "arguments": json.dumps(tool_call["args"]),
-        },
-    }
-
-
-# TODO: REMOVE
-def _lc_invalid_tool_call_to_openai_tool_call(
-    invalid_tool_call: InvalidToolCall,
-) -> dict:
-    return {
-        "type": "function",
-        "id": invalid_tool_call["id"],
-        "function": {
-            "name": invalid_tool_call["name"],
-            "arguments": invalid_tool_call["args"],
-        },
-    }
-
-
-# TODO: REMOVE
-def _convert_dict_to_message(messages: List[Dict[str, Any]]) -> List[BaseMessage]:
-    """Convert a list of dictionaries to LangChain messages.
-
-    Args:
-        messages: The list of dictionaries.
-
-    Returns:
-        The list of LangChain messages.
-    """
-    
-   
-    langchain_messages = []
-    for message in messages:
-       
-        json_message = json.loads(message)
-        if json_message.get("role") == "system":
-            langchain_messages.append(SystemMessage(content=json_message["content"]))
-        elif json_message.get("role") == "assistant":
-            langchain_messages.append(AIMessage(content=json_message["content"], tool_calls=json_message.get("tool_calls", [])))
-        elif json_message.get("role") == "user":
-            langchain_messages.append(HumanMessage(content=json_message["content"]))
-        elif json_message.get("role") == "tool":
-            langchain_messages.append(ToolMessage(content=json_message["content"]))
-    return langchain_messages
+def is_list_string(input_string):
+    try:
+        # Attempt to evaluate the string as a Python literal
+        result = ast.literal_eval(input_string)
+        # Check if the result is a list
+        return isinstance(result, list)
+    except (ValueError, SyntaxError):
+        # If evaluation fails, the string is not a valid Python literal
+        return False
 
 
 def _convert_message_to_dict(message: BaseMessage) -> dict:
@@ -361,7 +419,6 @@ def _convert_message_to_dict(message: BaseMessage) -> dict:
                 message_dict["content"] = None
         if "message.tool_calls":
             message_dict["tool_calls"] = message.tool_calls
-           
     elif isinstance(message, SystemMessage):
         message_dict = {"role": "system", "content": message.content}
     elif isinstance(message, FunctionMessage):
@@ -685,7 +742,7 @@ class ChatWatsonx(BaseChatModel):
                         + f"<|begin_of_text|><|start_header_id|>assistant<|end_header_id|>\n {message['content']} <|eot_id|>\n"
                     )
                 elif message["role"] == "tool_call":
-                    prompt += f"<|begin_of_text|><|start_header_id|>{message.get("role")}<|end_header_id|>\n {message['content']} <|eot_id|>\n"
+                    prompt += f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n {message['content']} <|eot_id|>\n"
                 else:
                     prompt += f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n {message['content']} <|eot_id|>\n"
             prompt += "<|assistant|>\n"
@@ -725,7 +782,7 @@ class ChatWatsonx(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
 
-        new_prompt = []
+        prompts = []
         system_message = ""
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
         chat_messages = []
@@ -733,6 +790,7 @@ class ChatWatsonx(BaseChatModel):
 
         tools = kwargs.get("tools")
 
+        ## CREATING TOOL PROMPT
         if tools:
             tool_descriptions = []
             for tool in tools:
@@ -746,7 +804,7 @@ class ChatWatsonx(BaseChatModel):
 
                 tool_descriptions.append(tool_description)
 
-            prompt = f"""Given the following functions, please respond with a JSON for a function call with its proper arguments that best answers the given prompt.\n
+            tool_prompt = f"""Given the following functions, please respond with a JSON for a function call with its proper arguments that best answers the given prompt.\n
 
             {tool_descriptions}\n
 
@@ -758,30 +816,32 @@ class ChatWatsonx(BaseChatModel):
                 -Put the entire function call reply on one line\
                 -ONLY use the function arguments provided in the tool description.\
                 -If you do not need to use a tool or you have the answer then respond directly to the user.
+                -Always use double quotes for keys and values in the JSON object.
             """
 
-            #### PREPROCESSING BEFORE SENDING TO LLM ####
 
-            chat_messages.append({"role": "system", "content": re.sub(r"\s+", " ", prompt).strip()})
+            chat_messages.append({"role": "system", "content": re.sub(r"\s+", " ", tool_prompt).strip()})
 
             for message in chat_messages:
                 if message.get("role") == "system":
                     system_message += message.get("content")
-                    system_message += "\n When responding to the user your role should always be assistant"
+                    # system_message += " When responding directly to the user your role "
 
-            new_prompt.insert(0, {"role": "system", "content": system_message})
+            prompts.insert(0, {"role": "system", "content": system_message})
 
             chat_messages = [message for message in chat_messages if message.get("role") != "system"]
 
-            new_prompt.extend(chat_messages)
+            prompts.extend(chat_messages)
 
             if "tools" in kwargs:
                 del kwargs["tools"]
             if "tool_choice" in kwargs:
                 del kwargs["tool_choice"]
+                
+        formatted_messages = self._create_chat_prompt(prompts)
 
         response = self.watsonx_model.generate(
-            prompt=json.dumps(new_prompt), **(kwargs | {"params": params})
+            prompt=formatted_messages, **(kwargs | {"params": params})
         )
 
         #### POST PROCESSING AFTER RECEIVING RESPONSE FROM LLM ####
