@@ -168,7 +168,7 @@ def _post_processing(_dict: Mapping[str, Any], call_id: str) -> BaseMessage:
     Returns:
         The LangChain message.
     """
-    raw_message = _dict.get("generated_text", "")
+    raw_message = _dict.get("generated_text", "") # Extract the generated text from the response
 
     is_tool = validate_tool_call_with_schema(raw_message) # Validates the output from the model to determine if a tool call should take place.
 
@@ -524,11 +524,14 @@ class ChatWatsonx(BaseChatModel):
         system_message = ""
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
         chat_messages = []
-        chat_messages.extend([m for m in message_dicts])
+        chat_messages.extend([m for m in message_dicts]) # Sort through the incoming messages from LangChain and add them to the chat_messages list
 
-        tools = kwargs.get("tools")
+        tools = kwargs.get("tools") # Extract out tools that are specified in LangChain
 
-        ## CREATING TOOL PROMPT
+        ## CREATING TOOL PROMPT###
+        # This creates the prompt that will be used to generate the Llama 3.1 prompt.
+        # This works by iterating through the tools and creating a prompt that will be used to generate the Llama 3.1 prompt.
+        ####
         if tools:
             tool_descriptions = []
             for tool in tools:
@@ -558,33 +561,27 @@ class ChatWatsonx(BaseChatModel):
                 -When calling a function or tool do NOT include anything except for the JSON string.\
             """
 
-            chat_messages.append(
-                {"role": "system", "content": re.sub(r"\s+", " ", tool_prompt).strip()}
-            )
+            chat_messages.append({"role": "system", "content": re.sub(r"\s+", " ", tool_prompt).strip()}) # Add the tool prompt to the chat_messages list
 
-            for message in chat_messages:
+            for message in chat_messages: # Iterate through the chat_messages list and add the system messages to the system_message variable
                 if message.get("role") == "system":
                     system_message += message.get("content")
 
-            prompts.insert(0, {"role": "system", "content": system_message})
+            prompts.insert(0, {"role": "system", "content": system_message}) # Insert the system messages into the prompts start of the list
 
-            chat_messages = [
-                message for message in chat_messages if message.get("role") != "system"
-            ]
+            chat_messages = [message for message in chat_messages if message.get("role") != "system"] # Remove the system messages from the chat_messages list
 
-            prompts.extend(chat_messages)
+            prompts.extend(chat_messages) # Add the chat_messages to the prompts list
 
             if "tools" in kwargs:
                 del kwargs["tools"]
             if "tool_choice" in kwargs:
                 del kwargs["tool_choice"]
 
-        formatted_messages = self._create_chat_prompt(
-            prompts
-        )  # Formats the prompts to be sent to the model.
-        response = self.watsonx_model.generate(
-            prompt=formatted_messages, **(kwargs | {"params": params})
-        )
+        # Formats the prompts to be sent to the model
+        formatted_messages = self._create_chat_prompt(prompts)
+        # Calls the model to generate a response
+        response = self.watsonx_model.generate(prompt=formatted_messages, **(kwargs | {"params": params}))
 
         #### POST PROCESSING AFTER RECEIVING RESPONSE FROM LLM ####
         return self._create_chat_result(response)
@@ -613,8 +610,7 @@ class ChatWatsonx(BaseChatModel):
             raise ValueError(response.get("error"))
 
         for res in response["results"]:
-
-            message = _post_processing(res, call_id)
+            message = _post_processing(res, call_id) # Run the response from the model through the post processing function putting the messages into LangChain format. 
             generation_info = dict(finish_reason=res.get("stop_reason"))
             if "generated_token_count" in res:
                 sum_of_total_generated_tokens += res["generated_token_count"]
