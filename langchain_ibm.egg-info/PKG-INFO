@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: langchain-ibm
+Version: 0.1.0
+Summary: A example Python package
+Home-page: https://github.com/nacartwright/langchain-ibm
+Author: Nathan Cartwright
+Author-email: nathan.cartwright@cdw.com
+License: MIT
+License-File: LICENSE
+Requires-Dist: ibm_watsonx_ai
+Requires-Dist: langchain_core
+Requires-Dist: jsonschema

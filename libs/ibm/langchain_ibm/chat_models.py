@@ -79,7 +79,6 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-import time #This is here just for troubleshooting purposes
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +94,6 @@ TOOL_SCHEMA = {
     },
     "required": ["name", "args"],
 }
-
 
 
 def validate_tool_call_with_schema(data: str) -> bool:
