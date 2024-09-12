@@ -79,7 +79,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-import time  # This is here just for troubleshooting purposes
+import time #This is here just for troubleshooting purposes
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +90,12 @@ TOOL_SCHEMA = {
         "name": {"type": "string", "description": "The name of the tool or action."},
         "args": {
             "type": "object",
-            "description": "The arguments or parameters for the tool or action.",
+            "description": "The arguments or parameters for the tool or action."
         },
     },
     "required": ["name", "args"],
 }
+
 
 
 def validate_tool_call_with_schema(data: str) -> bool:
@@ -168,13 +169,14 @@ def _post_processing(_dict: Mapping[str, Any], call_id: str) -> BaseMessage:
     Returns:
         The LangChain message.
     """
-    raw_message = _dict.get("generated_text", "") # Extract the generated text from the response
+    raw_message = _dict.get("generated_text", "")
 
-    is_tool = validate_tool_call_with_schema(raw_message) # Validates the output from the model to determine if a tool call should take place.
+    is_tool = validate_tool_call_with_schema(raw_message)
 
     if is_tool:
-        return _tool_calling(raw_message, call_id) # If the output is a tool call, return a tool call message
-    return AIMessage(content=raw_message) # If the output is not a tool call, return a regular AIMessage
+        return _tool_calling(raw_message, call_id)
+    return AIMessage(content=raw_message)
+
 
 
 def _convert_message_to_dict(message: BaseMessage) -> dict:
@@ -467,10 +469,7 @@ class ChatWatsonx(BaseChatModel):
                 else:
                     prompt += message["content"] + "\n[/INST]\n"
 
-        elif self.model_id in [
-            "meta-llama/llama-3-1-8b-instruct",
-            "meta-llama/llama-3-1-70b-instruct",
-        ]:
+        elif self.model_id in ["meta-llama/llama-3-1-8b-instruct", "meta-llama/llama-3-1-70b-instruct"]:
             for message in messages:
                 if message["role"] == "system":
                     prompt += f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n {message['content']} <|eot_id|>\n"
@@ -524,14 +523,11 @@ class ChatWatsonx(BaseChatModel):
         system_message = ""
         message_dicts, params = self._create_message_dicts(messages, stop, **kwargs)
         chat_messages = []
-        chat_messages.extend([m for m in message_dicts]) # Sort through the incoming messages from LangChain and add them to the chat_messages list
+        chat_messages.extend([m for m in message_dicts])
 
-        tools = kwargs.get("tools") # Extract out tools that are specified in LangChain
+        tools = kwargs.get("tools")
 
-        ## CREATING TOOL PROMPT###
-        # This creates the prompt that will be used to generate the Llama 3.1 prompt.
-        # This works by iterating through the tools and creating a prompt that will be used to generate the Llama 3.1 prompt.
-        ####
+        ## CREATING TOOL PROMPT
         if tools:
             tool_descriptions = []
             for tool in tools:
@@ -557,30 +553,26 @@ class ChatWatsonx(BaseChatModel):
                 -Put the entire function call reply on one line\
                 -ONLY use the function arguments provided in the tool description.\
                 -Always use double quotes for keys and values in the JSON object such as {{"name": "name of function", "args": {{"arg1": "value1", "arg2": "value2"}}}}\
-                -If you do not need to use a tool or you have the answer then respond directly to the user.
+                -If you do not need to use a tool or you have the answer then respond directly to the user.\
                 -When calling a function or tool do NOT include anything except for the JSON string.\
             """
 
-            chat_messages.append({"role": "system", "content": re.sub(r"\s+", " ", tool_prompt).strip()}) # Add the tool prompt to the chat_messages list
-
-            for message in chat_messages: # Iterate through the chat_messages list and add the system messages to the system_message variable
-                if message.get("role") == "system":
-                    system_message += message.get("content")
-
-            prompts.insert(0, {"role": "system", "content": system_message}) # Insert the system messages into the prompts start of the list
-
-            chat_messages = [message for message in chat_messages if message.get("role") != "system"] # Remove the system messages from the chat_messages list
-
-            prompts.extend(chat_messages) # Add the chat_messages to the prompts list
+            # If tools are present we add the tool prompt to the chat_messages so it can be combined with the other system messages.
+            chat_messages.append({"role": "system", "content": re.sub(r"\s+", " ", tool_prompt).strip()})
 
             if "tools" in kwargs:
                 del kwargs["tools"]
             if "tool_choice" in kwargs:
                 del kwargs["tool_choice"]
 
-        # Formats the prompts to be sent to the model
-        formatted_messages = self._create_chat_prompt(prompts)
-        # Calls the model to generate a response
+
+        # There could be multiple System prompts such as the prompt that is created at runtime of the
+        # user application to give a persona to the LLM. Additionally, we need to add the tool prompt
+        # as the system prompt. Below we are extracting all of the system prompts to combined them.
+        system_message = "".join(message["content"] for message in chat_messages if message.get("role") == "system")
+        prompts = [{"role": "system", "content": system_message}] + [message for message in chat_messages if message.get("role") != "system"]
+
+        formatted_messages = self._create_chat_prompt(prompts) # Formats the prompts to be sent to the model.
         response = self.watsonx_model.generate(prompt=formatted_messages, **(kwargs | {"params": params}))
 
         #### POST PROCESSING AFTER RECEIVING RESPONSE FROM LLM ####
@@ -610,7 +602,7 @@ class ChatWatsonx(BaseChatModel):
             raise ValueError(response.get("error"))
 
         for res in response["results"]:
-            message = _post_processing(res, call_id) # Run the response from the model through the post processing function putting the messages into LangChain format. 
+            message = _post_processing(res, call_id)
             generation_info = dict(finish_reason=res.get("stop_reason"))
             if "generated_token_count" in res:
                 sum_of_total_generated_tokens += res["generated_token_count"]
@@ -664,32 +656,7 @@ class ChatWatsonx(BaseChatModel):
                 :class:`~langchain.runnable.Runnable` constructor.
         """
 
-        formatted_functions = [convert_to_openai_function(fn) for fn in functions]
-        if function_call is not None:
-            function_call = (
-                {"name": function_call}
-                if isinstance(function_call, str)
-                and function_call not in ("auto", "none")
-                else function_call
-            )
-            if isinstance(function_call, dict) and len(formatted_functions) != 1:
-                raise ValueError(
-                    "When specifying `function_call`, you must provide exactly one "
-                    "function."
-                )
-            if (
-                isinstance(function_call, dict)
-                and formatted_functions[0]["name"] != function_call["name"]
-            ):
-                raise ValueError(
-                    f"Function call {function_call} was specified, but the only "
-                    f"provided function was {formatted_functions[0]['name']}."
-                )
-            kwargs = {**kwargs, "function_call": function_call}
-        return super().bind(
-            functions=formatted_functions,
-            **kwargs,
-        )
+        raise NotImplementedError("The 'bind_functions' method is not implemented. Please use 'bind_tools' instead.")
 
     def bind_tools(
         self,
@@ -700,13 +667,7 @@ class ChatWatsonx(BaseChatModel):
         ] = None,
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, BaseMessage]:
-        bind_tools_supported_models = [
-            "ibm/granite-20b-code-instruct",
-            "ibm/granite-13b-chat-v2",
-            "ibm/granite-13b-instruct-v2",
-            "meta-llama/llama-3-1-8b-instruct",
-            "meta-llama/llama-3-1-70b-instruct",
-        ]
+        bind_tools_supported_models = ["ibm/granite-20b-code-instruct", "ibm/granite-13b-chat-v2", "ibm/granite-13b-instruct-v2", "meta-llama/llama-3-1-8b-instruct", "meta-llama/llama-3-1-70b-instruct"]
 
         if self.model_id not in bind_tools_supported_models:
             raise Warning(
